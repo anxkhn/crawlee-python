@@ -5,7 +5,10 @@ from typing import TYPE_CHECKING
 import pytest
 
 from crawlee.fingerprint_suite import HeaderGenerator
-from crawlee.fingerprint_suite._browserforge_adapter import get_available_header_values
+from crawlee.fingerprint_suite._browserforge_adapter import (
+    PatchedHeaderGenerator,
+    get_available_header_values,
+)
 from crawlee.fingerprint_suite._consts import (
     BROWSER_TYPE_HEADER_KEYWORD,
 )
@@ -78,3 +81,37 @@ def test_get_sec_ch_ua_headers_invalid_browser_type() -> None:
 
     with pytest.raises(ValueError, match=r'Unsupported browser type'):
         header_generator.get_sec_ch_ua_headers(browser_type='invalid_browser')  # ty: ignore[invalid-argument-type]
+
+
+@pytest.mark.parametrize(
+    ('locales', 'expected'),
+    [
+        pytest.param(['en-US'], 'en-US', id='single'),
+        pytest.param(['en-US', 'en'], 'en-US,en;q=0.9', id='pair'),
+        pytest.param(
+            ['l0', 'l1', 'l2', 'l3', 'l4'],
+            'l0,l1;q=0.9,l2;q=0.8,l3;q=0.7,l4;q=0.6',
+            id='descending',
+        ),
+    ],
+)
+def test_accept_language_quality_factors(locales: list[str], expected: str) -> None:
+    """The first locale is implicitly q=1 and the rest descend by 0.1."""
+    assert PatchedHeaderGenerator()._get_accept_language_header(locales) == expected
+
+
+def test_accept_language_quality_factor_stays_valid_for_many_locales() -> None:
+    """RFC 9110 restricts qvalue to 0..1, and q=0 means "not acceptable".
+
+    An unclamped `0.9 - index * 0.1` reaches 0.0 at the eleventh locale and turns negative at the
+    twelfth, producing a header no real browser emits.
+    """
+    locales = [f'l{index}' for index in range(15)]
+    header = PatchedHeaderGenerator()._get_accept_language_header(locales)
+
+    quality_factors = [float(part.split(';q=')[1]) for part in header.split(',') if ';q=' in part]
+
+    assert quality_factors, 'expected quality factors to be present'
+    assert all(0 < factor <= 1 for factor in quality_factors), header
+    # Still monotonically non-increasing, as a browser would emit.
+    assert quality_factors == sorted(quality_factors, reverse=True), header

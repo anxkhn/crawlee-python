@@ -27,6 +27,14 @@ if TYPE_CHECKING:
     from ._types import HeaderGeneratorOptions, ScreenOptions, SupportedBrowserType
 
 
+_MIN_QUALITY_FACTOR = 0.1
+"""Lowest quality factor used in the `Accept-Language` header.
+
+RFC 9110 allows a qvalue between 0 and 1, and q=0 means the language is not acceptable, so 0.1 is
+the smallest value that still expresses a preference.
+"""
+
+
 class PatchedHeaderGenerator(bf_HeaderGenerator):
     """Browserforge `HeaderGenerator` that contains patches specific for our usage of the generator."""
 
@@ -50,7 +58,15 @@ class PatchedHeaderGenerator(bf_HeaderGenerator):
             locales_tuple = locales
 
         # First locale does not include quality factor, q=1 is considered as implicit.
-        additional_locales = [f'{locale};q={0.9 - index * 0.1:.1f}' for index, locale in enumerate(locales_tuple[1:])]
+        # The quality factor is clamped to the lowest valid non-zero value. RFC 9110 restricts
+        # qvalue to the range 0 to 1, and q=0 means "not acceptable", so an unclamped
+        # `0.9 - index * 0.1` starts emitting semantically wrong values from the eleventh locale
+        # and syntactically invalid negative ones from the twelfth. An `Accept-Language` header no
+        # real browser could produce defeats the purpose of generating one.
+        additional_locales = [
+            f'{locale};q={max(_MIN_QUALITY_FACTOR, 0.9 - index * 0.1):.1f}'
+            for index, locale in enumerate(locales_tuple[1:])
+        ]
         return ','.join((locales_tuple[0], *additional_locales))
 
     def generate(
